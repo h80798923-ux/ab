@@ -1,0 +1,105 @@
+name: Build TrixieOS ISO
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+
+    steps:
+    - name: Install build deps
+      run: |
+        sudo apt update
+        sudo apt install -y \
+          build-essential bc bison flex libssl-dev libelf-dev \
+          grub-pc-bin xorriso squashfs-tools \
+          wget git cpio rsync unzip
+
+    - name: Create rootfs
+      run: |
+        mkdir -p rootfs
+        wget https://dl-cdn.alpinelinux.org/alpine/v3.19/releases/x86_64/alpine-minirootfs-3.19.1-x86_64.tar.gz
+        sudo tar -xzf alpine-minirootfs-*.tar.gz -C rootfs
+
+    - name: Prepare chroot
+      run: |
+        sudo mount --bind /dev rootfs/dev
+        sudo mount -t proc proc rootfs/proc
+        sudo mount -t sysfs sys rootfs/sys
+
+    - name: Base system (NO alpine branding)
+      run: |
+        sudo chroot rootfs /bin/sh <<'EOF'
+        echo "TrixieOS" > /etc/hostname
+        echo "TrixieOS ProjectA tarafından yapıldı" > /etc/issue
+
+        apk add --no-cache \
+          openrc busybox sudo dbus \
+          xorg-server xf86-video-vesa \
+          openbox xterm \
+          grub
+
+        rc-update add dbus default
+        rc-update add openrc default
+        passwd -d root
+        EOF
+
+    - name: Build Linux kernel (vanilla)
+      run: |
+        wget https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.6.8.tar.xz
+        tar -xf linux-6.6.8.tar.xz
+        cd linux-6.6.8
+        make defconfig
+        make -j$(nproc)
+        sudo make INSTALL_MOD_PATH=../rootfs modules_install
+        sudo cp arch/x86/boot/bzImage ../rootfs/boot/vmlinuz
+
+    - name: Build BusyBox
+      run: |
+        wget https://busybox.net/downloads/busybox-1.36.1.tar.bz2
+        tar -xf busybox-1.36.1.tar.bz2
+        cd busybox-1.36.1
+        make defconfig
+        make -j$(nproc)
+        sudo make CONFIG_PREFIX=../rootfs install
+
+    - name: Openbox autostart
+      run: |
+        sudo mkdir -p rootfs/root/.config/openbox
+        sudo tee rootfs/root/.xinitrc <<EOF
+        exec openbox-session
+        EOF
+
+    - name: GRUB config
+      run: |
+        sudo mkdir -p rootfs/boot/grub
+        sudo tee rootfs/boot/grub/grub.cfg <<EOF
+        set timeout=3
+        menuentry "TrixieOS Live" {
+          linux /boot/vmlinuz quiet
+          initrd /boot/initramfs.img
+        }
+        EOF
+
+    - name: Create initramfs
+      run: |
+        cd rootfs
+        find . | cpio -H newc -ov | gzip > ../initramfs.img
+        sudo mv ../initramfs.img boot/initramfs.img
+
+    - name: Build ISO
+      run: |
+        mkdir -p iso/boot/grub
+        cp rootfs/boot/vmlinuz iso/boot/
+        cp rootfs/boot/initramfs.img iso/boot/
+        cp rootfs/boot/grub/grub.cfg iso/boot/grub/
+
+        grub-mkrescue -o TrixieOS.iso iso
+
+    - name: Upload ISO
+      uses: actions/upload-artifact@v4
+      with:
+        name: TrixieOS-ISO
+        path: TrixieOS.iso
