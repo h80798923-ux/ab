@@ -1,0 +1,162 @@
+name: TrixieOs Full Independent Linux
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+
+    steps:
+    - name: Install build dependencies
+      run: |
+        sudo apt update
+        sudo apt install -y \
+          build-essential wget curl git \
+          bison flex gawk texinfo \
+          xz-utils pkg-config \
+          python3 file bc \
+          libncurses-dev \
+          libssl-dev \
+          xorriso grub-pc-bin
+
+    - name: Set environment
+      run: |
+        echo "TRIXIE=/opt/trixieos" >> $GITHUB_ENV
+        echo "PATH=/opt/trixieos/tools/bin:$PATH" >> $GITHUB_ENV
+
+    - name: Create base directories
+      run: |
+        sudo mkdir -p /opt/trixieos
+        sudo chown $USER /opt/trixieos
+        mkdir -p $TRIXIE/{sources,tools,rootfs}
+        mkdir -p $TRIXIE/rootfs/{bin,sbin,etc,proc,sys,dev,run,tmp}
+        mkdir -p $TRIXIE/rootfs/{usr/{bin,sbin,lib},var,lib,lib64}
+        chmod 1777 $TRIXIE/rootfs/tmp
+
+    - name: Download sources
+      run: |
+        cd $TRIXIE/sources
+        wget -c https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.6.8.tar.xz
+        wget -c https://ftp.gnu.org/gnu/glibc/glibc-2.39.tar.xz
+        wget -c https://busybox.net/downloads/busybox-1.36.1.tar.bz2
+        wget -c https://www.freedesktop.org/software/systemd/systemd-255.tar.gz
+        wget -c https://dbus.freedesktop.org/releases/dbus/dbus-1.14.10.tar.xz
+        wget -c https://www.x.org/releases/individual/xserver/xorg-server-21.1.9.tar.xz
+        wget -c https://openbox.org/dist/openbox/openbox-3.6.1.tar.gz
+        wget -c https://github.com/o9000/tint2/archive/refs/tags/17.0.2.tar.gz
+
+    - name: Build Linux kernel
+      run: |
+        cd $TRIXIE/sources
+        tar -xf linux-6.6.8.tar.xz
+        cd linux-6.6.8
+        make defconfig
+        make -j$(nproc)
+        cp arch/x86/boot/bzImage $TRIXIE/rootfs/boot-vmlinuz
+
+    - name: Build glibc
+      run: |
+        cd $TRIXIE/sources
+        tar -xf glibc-2.39.tar.xz
+        mkdir glibc-build
+        cd glibc-build
+        ../glibc-2.39/configure \
+          --prefix=/usr \
+          --host=x86_64-linux-gnu \
+          --disable-werror
+        make -j$(nproc)
+        make DESTDIR=$TRIXIE/rootfs install
+
+    - name: Build BusyBox
+      run: |
+        cd $TRIXIE/sources
+        tar -xf busybox-1.36.1.tar.bz2
+        cd busybox-1.36.1
+        make defconfig
+        make -j$(nproc)
+        make CONFIG_PREFIX=$TRIXIE/rootfs install
+
+    - name: Build systemd
+      run: |
+        cd $TRIXIE/sources
+        tar -xf systemd-255.tar.gz
+        cd systemd-255
+        meson setup build --prefix=/usr
+        ninja -C build
+        DESTDIR=$TRIXIE/rootfs ninja -C build install
+
+    - name: Build dbus
+      run: |
+        cd $TRIXIE/sources
+        tar -xf dbus-1.14.10.tar.xz
+        cd dbus-1.14.10
+        ./configure --prefix=/usr
+        make -j$(nproc)
+        make DESTDIR=$TRIXIE/rootfs install
+
+    - name: Build Xorg
+      run: |
+        cd $TRIXIE/sources
+        tar -xf xorg-server-21.1.9.tar.xz
+        cd xorg-server-21.1.9
+        ./configure --prefix=/usr
+        make -j$(nproc)
+        make DESTDIR=$TRIXIE/rootfs install
+
+    - name: Build Openbox and tint2
+      run: |
+        cd $TRIXIE/sources
+        tar -xf openbox-3.6.1.tar.gz
+        cd openbox-3.6.1
+        ./configure --prefix=/usr
+        make -j$(nproc)
+        make DESTDIR=$TRIXIE/rootfs install
+
+        cd $TRIXIE/sources
+        tar -xf 17.0.2.tar.gz
+        cd tint2-17.0.2
+        make
+        make DESTDIR=$TRIXIE/rootfs install
+
+    - name: Create trx package manager
+      run: |
+        cat > $TRIXIE/rootfs/usr/bin/trx <<'EOF'
+#!/bin/sh
+echo "trx package manager (TrixieOs)"
+echo "install/remove/update coming soon"
+EOF
+        chmod +x $TRIXIE/rootfs/usr/bin/trx
+
+    - name: OS release
+      run: |
+        cat > $TRIXIE/rootfs/etc/os-release <<EOF
+NAME="TrixieOs"
+ID=trixieos
+PRETTY_NAME="TrixieOs"
+VERSION="1.0"
+EOF
+
+    - name: Create ISO
+      run: |
+        mkdir -p iso/boot/grub
+        cp $TRIXIE/rootfs/boot-vmlinuz iso/boot/vmlinuz
+        (cd $TRIXIE/rootfs && find . | cpio -o -H newc | gzip) > iso/boot/initrd.gz
+
+        cat > iso/boot/grub/grub.cfg <<EOF
+set timeout=3
+menuentry "TrixieOs" {
+  echo "TrixieOs - ProjectA tarafından yapıldı"
+  linux /boot/vmlinuz quiet
+  initrd /boot/initrd.gz
+}
+EOF
+
+        grub-mkrescue -o TrixieOs.iso iso
+
+    - name: Upload ISO
+      uses: actions/upload-artifact@v4
+      with:
+        name: TrixieOs-ISO
+        path: TrixieOs.iso
