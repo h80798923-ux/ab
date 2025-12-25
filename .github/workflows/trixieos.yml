@@ -1,0 +1,92 @@
+name: Build TrixieOS (Real Distro)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+
+    steps:
+    - name: Install host tools
+      run: |
+        sudo apt update
+        sudo apt install -y \
+          git wget curl xorriso squashfs-tools \
+          syslinux-utils grub-pc-bin \
+          qemu-utils tar gzip
+
+    - name: Download Alpine base (hidden)
+      run: |
+        mkdir base
+        wget -q https://dl-cdn.alpinelinux.org/alpine/v3.19/releases/x86_64/alpine-minirootfs-3.19.1-x86_64.tar.gz
+        tar -xf alpine-minirootfs-*.tar.gz -C base
+
+    - name: Rebrand to TrixieOS
+      run: |
+        echo "TrixieOS" > base/etc/hostname
+        echo "TrixieOS - ProjectA tarafından yapıldı" > base/etc/issue
+        sed -i 's/Alpine/TrixieOS/g' base/etc/* || true
+
+    - name: Configure repositories (GitHub based)
+      run: |
+        mkdir -p base/etc/apk
+        cat > base/etc/apk/repositories <<EOF
+        https://dl-cdn.alpinelinux.org/alpine/v3.19/main
+        https://dl-cdn.alpinelinux.org/alpine/v3.19/community
+        EOF
+
+    - name: Install base system
+      run: |
+        sudo chroot base /bin/sh <<'EOF'
+        apk update
+        apk add \
+          linux-lts busybox openrc \
+          xorg-server xf86-video-vesa \
+          openbox xterm dbus \
+          grub syslinux \
+          sudo bash
+        rc-update add dbus
+        rc-update add networking
+        EOF
+
+    - name: Openbox autostart
+      run: |
+        mkdir -p base/etc/X11
+        echo "exec openbox-session" > base/etc/X11/xinitrc
+
+    - name: Boot splash
+      run: |
+        mkdir -p base/boot
+        echo "Welcome to TrixieOS" > base/boot/splash.txt
+
+    - name: Create Live ISO
+      run: |
+        mkdir iso
+        cp -a base iso/rootfs
+        mksquashfs iso/rootfs iso/rootfs.sqfs
+        xorriso -as mkisofs \
+          -o TrixieOS-Live.iso \
+          -V "TrixieOS_LIVE" \
+          iso
+
+    - name: Create Installer ISO
+      run: |
+        cp TrixieOS-Live.iso TrixieOS-Installer.iso
+
+    - name: Build ARM64 rootfs (Termux)
+      run: |
+        mkdir arm64
+        wget -q https://dl-cdn.alpinelinux.org/alpine/v3.19/releases/aarch64/alpine-minirootfs-3.19.1-aarch64.tar.gz
+        tar -xf alpine-minirootfs-*.tar.gz -C arm64
+        echo "TrixieOS ARM64" > arm64/etc/issue
+        tar -czf TrixieOS-rootfs-arm64.tar.gz arm64
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: TrixieOS
+        path: |
+          TrixieOS-Live.iso
+          TrixieOS-Installer.iso
+          TrixieOS-rootfs-arm64.tar.gz
